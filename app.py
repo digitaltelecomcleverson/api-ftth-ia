@@ -32,7 +32,7 @@ class Projeto(BaseModel):
     potencia_olt: float
 
 @app.post("/api/v1/calcular")
-async def calcular(dados: Projeto):
+async def calcular(dados: RequestProjetoCascata):
     try:
         kml = simplekml.Kml()
         fol_cabos = kml.newfolder(name="Cabos")
