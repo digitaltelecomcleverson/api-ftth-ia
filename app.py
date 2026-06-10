@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 
-app = FastAPI(title="Motor FTTH Profissional - Validação Rígida PON e Linhas ASU")
+app = FastAPI(title="Motor FTTH - Derivação em Cascata entre CTOs")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,143 +23,149 @@ class Coordenada(BaseModel):
     lat: float
     lng: float
 
-class ElementoManual(BaseModel):
+class ElementoCascata(BaseModel):
     id: int
     lat: float
     lng: float
     pon_id: int
-    ceo_vinculo: int
+    pai_tipo: str  # "CEO" ou "CTO"
+    pai_id: int    # ID do elemento pai de onde deriva o cabo
 
-class RequestProjetoEngenharia(BaseModel):
+class RequestProjetoCascata(BaseModel):
     olt: Coordenada
-    ceos: List[ElementoManual]
-    ctos: List[ElementoManual]
+    ceos: List[ElementoCascata]
+    ctos: List[ElementoCascata]
     splitter_ceo: str
     splitter_cto: str
     potencia_olt: float
 
 @app.get("/")
 def read_root():
-    return {"status": "Motor de Engenharia FTTH Ativo e Validado"}
+    return {"status": "Motor FTTH Derivação em Cascata Ativo"}
 
 @app.post("/api/v1/calcular")
-async def calcular_rede_engenharia(dados: RequestProjetoEngenharia):
+async def calcular_rede_cascata(dados: RequestProjetoCascata):
     if not dados.ceos:
-        raise HTTPException(status_code=400, detail="Implante ao menos uma Caixa de Emenda (CEO).")
+        raise HTTPException(status_code=400, detail="Implante ao menos uma CEO.")
     if not dados.ctos:
-        raise HTTPException(status_code=400, detail="Implante caixas CTO para traçar o cabeamento.")
+        raise HTTPException(status_code=400, detail="Implante CTOs no mapa.")
 
-    # VALIDAÇÃO RÍGIDA 1: Limite de atendimento do Splitter da CEO por Porta PON
-    limite_caixas_pon = TABELA_SPLITTERS.get(dados.splitter_ceo, 8)
-    
-    # Verifica cada PON individualmente
-    for ceo_verif in dados.ceos:
-        qtd_ctos_na_pon = len([c for c in dados.ctos if c.ceo_vinculo == ceo_verif.id and c.pon_id == ceo_verif.pon_id])
-        if qtd_ctos_na_pon > limite_caixas_pon:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Bloqueio de Engenharia: A PON {ceo_verif.pon_id} está com {qtd_ctos_na_pon} CTOs implantadas. O splitter {dados.splitter_ceo} configurado na CEO suporta no máximo {limite_caixas_pon} caixas! Mude as caixas excedentes para outra Porta PON."
-            )
+    # Validação de Limite PON
+    limite_caixas = TABELA_SPLITTERS.get(dados.splitter_ceo, 8)
+    for ceo in dados.ceos:
+        qtd_ctos = len([c for c in dados.ctos if c.pon_id == ceo.pon_id])
+        if qtd_ctos > limite_caixas:
+            raise HTTPException(status_code=400, detail=f"A PON {ceo.pon_id} possui {qtd_ctos} CTOs. O limite para o splitter {dados.splitter_ceo} é de {limite_caixas}!")
 
     try:
-        kml = simplekml.Kml(name="Projeto Executivo - Digital Telecom")
+        kml = simplekml.Kml(name="Projeto Digital Telecom - Derivação Cascata")
         fol_backbone = kml.newfolder(name="01. BACKBONE (Cabo Alimentador)")
         fol_ceos = kml.newfolder(name="02. CAIXAS DE EMENDA (CEO)")
         fol_ctos_root = kml.newfolder(name="03. CAIXAS DE ATENDIMENTO (CTO)")
         fol_cabos_root = kml.newfolder(name="04. CABOS DE DISTRIBUIÇÃO")
 
-        # Desenha os cabos alimentadores das CEOs (Backbone)
+        # 1. Desenha Backbone (OLT -> CEOs)
+        dict_ceos = {}
         for ceo in dados.ceos:
-            pnt_c = fol_ceos.newpoint(name=f"CEO {ceo.id:02d}", coords=[(ceo.lng, ceo.lat)])
-            pnt_c.description = f"<h3>CEO {ceo.id:02d}</h3><p><b>Porta Atendida:</b> PON {ceo.pon_id}</p><p><b>Splitter Primário:</b> {dados.splitter_ceo}</p>"
+            dict_ceos[ceo.id] = ceo
+            pnt = fol_ceos.newpoint(name=f"CEO {ceo.id:02d}", coords=[(ceo.lng, ceo.lat)])
+            pnt.description = f"<h3>CEO {ceo.id:02d}</h3><p>PON Atendida: PON {ceo.pon_id}</p>"
             
             lin_t = fol_backbone.newlinestring(name=f"Cabo Tronco -> CEO {ceo.id:02d}")
             lin_t.coords = [(dados.olt.lng, dados.olt.lat), (ceo.lng, ceo.lat)]
             lin_t.style.linestyle.width = 5
             lin_t.style.linestyle.color = "ff0000ff"
 
+        # Mapas para controle de distâncias acumuladas e caminhos físicos
+        dict_ctos = {c.id: c for c in dados.ctos}
+        dist_acumulada_nodos = {} # Guarda a distância total de fibra desde a OLT para cada ID de CTO
         response_ctos = []
 
-        # 2. PROCESSAMENTO DIRECIONAL POR CABO (SEM ZIGUE-ZAGUE / SEM RETORNO)
-        for ceo in dados.ceos:
-            ctos_da_ceo = [c for c in dados.ctos if c.ceo_vinculo == ceo.id and c.pon_id == ceo.pon_id]
-            if not ctos_da_ceo: continue
+        # Para calcular a potência de forma correta, processamos as caixas descendo a árvore de derivações
+        # Primeiro calculamos as CTOs ligadas direto na CEO, depois as derivadas delas e assim por diante
+        elementos_para_processar = dados.ctos.copy()
+        
+        # Mapa para descobrir quantas caixas dependem de um cabo (para dimensionar se o cabo é de 6FO ou 12FO)
+        def contar_caixas_a_jusante(cto_id):
+            filhos = [c for c in dados.ctos if c.pai_tipo == "CTO" and c.pai_id == cto_id]
+            total = len(filhos)
+            for f in map(lambda x: x.id, filhos):
+                total += contar_caixas_a_jusante(f)
+            return total
 
-            # Classifica e separa as CTOs por "Lado/Direção" usando agrupamento vetorial angular (Rua por Rua)
-            # Desta forma, caixas em direções opostas ganham cabos independentes saindo da CEO
-            coords_ctos = np.array([[c.lat, c.lng] for c in ctos_da_ceo])
-            ceo_pt = np.array([ceo.lat, ceo.lng])
-            
-            angulos = np.array([np.arctan2(c[0] - ceo_pt[0], c[1] - ceo_pt[1]) for c in coords_ctos])
-            
-            # Define quantas direções/ruas distintas existem (mínimo 1, máximo 4 saídas de cabos por CEO)
-            qtd_direcoes = min(4, len(ctos_da_ceo))
-            from sklearn.cluster import KMeans
-            kmeans_dir = KMeans(n_clusters=qtd_direcoes, random_state=42, n_init=10)
-            kmeans_dir.fit(angulos.reshape(-1, 1))
-            labels_direcoes = kmeans_dir.labels_
-
-            # Processa cada cabo/rua independente saindo da CEO
-            for d_idx in range(qtd_direcoes):
-                indices_da_rua = [idx for idx, lbl in enumerate(labels_direcoes) if lbl == d_idx]
-                if not indices_da_rua: continue
-
-                ctos_desta_rua = [ctos_da_ceo[idx] for idx in indices_da_rua]
+        # Loop de processamento em árvore
+        while len(elementos_para_processar) > 0:
+            processou_algum = False
+            for cto in list(elementos_para_processar):
                 
-                # Ordena as caixas em linha reta estrita, do início da rua (perto da CEO) para o fim da rua
-                ctos_desta_rua.sort(key=lambda c: (c.lat - ceo.lat)**2 + (c.lng - ceo.lng)**2)
+                # Descobre a coordenada do pai de onde o cabo está saindo fisicamente
+                pai_lat, pai_lng, dist_base = 0.0, 0.0, 0.0
+                
+                if cto.pai_tipo == "CEO":
+                    if cto.pai_id in dict_ceos:
+                        ceo_pai = dict_ceos[cto.pai_id]
+                        pai_lat, pai_lng = ceo_pai.lat, ceo_pai.lng
+                        dist_base = np.sqrt((ceo_pai.lat - dados.olt.lat)**2 + (ceo_pai.lng - dados.olt.lng)**2) * 111.32
+                        processou_algum = True
+                else: # O pai é outra CTO
+                    if cto.pai_id in dist_acumulada_nodos: # O pai já precisa ter sido calculado antes
+                        cto_pai = dict_ctos[cto.pai_id]
+                        pai_lat, pai_lng = cto_pai.lat, cto_pai.lng
+                        dist_base = dist_acumulada_nodos[cto.pai_id]
+                        processou_algum = True
+                    else:
+                        continue # Pula temporariamente se a CTO pai ainda não foi processada no loop
 
-                # Regra de Engenharia: Define a bitola do cabo baseado estritamente na quantidade dessa linha reta
-                qtd_na_linha = len(ctos_desta_rua)
-                tipo_cabo = "12FO (ASU-120)" if qtd_na_linha > 6 else "6FO (ASU-80)"
+                if processou_algum:
+                    # Calcula distância do lance de poste e acumula
+                    dist_lance = np.sqrt((cto.lat - pai_lat)**2 + (cto.lng - pai_lng)**2) * 111.32
+                    dist_total_fibra = dist_base + dist_lance
+                    dist_acumulada_nodos[cto.id] = dist_total_fibra
 
-                pt_anterior_lat = ceo.lat
-                pt_anterior_lng = ceo.lng
-                dist_acumulada_linha = 0.0
-                dist_base_ceo = np.sqrt((ceo.lat - dados.olt.lat)**2 + (ceo.lng - dados.olt.lng)**2) * 111.32
+                    # Regra de Bitola de Engenharia: Conta a carga de caixas que vão passar por esse cabo adiante
+                    carga_subsequente = contar_caixas_a_jusante(cto.id)
+                    tipo_cabo = "12FO (ASU-120)" if (carga_subsequente + 1) > 6 else "6FO (ASU-80)"
 
-                for seq_pos, cto in enumerate(ctos_desta_rua):
-                    fibra_num = seq_pos + 1
-                    cor_fibra = CORES_ANATEL[seq_pos % len(CORES_ANATEL)]
+                    # Orçamento de potência
+                    potencia = dados.potencia_olt - ((dist_total_fibra * 0.35) + 10.5 + 10.5 + 0.6)
+                    fibra_num = (cto.id % 6) if (cto.id % 6) != 0 else 6
+                    cor_fibra = CORES_ANATEL[fibra_num - 1]
 
-                    # Cálculo cumulativo de perda na rota física (sentido correto)
-                    d_trecho = np.sqrt((cto.lat - pt_anterior_lat)**2 + (cto.lng - pt_anterior_lng)**2) * 111.32
-                    dist_acumulada_linha += d_trecho
-                    dist_total = dist_base_ceo + dist_acumulada_linha
-                    potencia = dados.potencia_olt - ((dist_total * 0.35) + 10.5 + 10.5 + 0.6)
-
-                    # Unifilar interno no KML
+                    # HTML Unifilar para o Google Earth
                     html_cto = f"""
-                    <div style="font-family:sans-serif; width:290px; color:#333;">
-                        <h3 style="background-color:#059669; color:white; padding:6px; margin:0; border-radius:4px 4px 0 0;">📦 UNIFILAR - CTO {cto.id:02d}</h3>
+                    <div style="font-family:sans-serif; width:300px; color:#333;">
+                        <h3 style="background-color:#059669; color:white; padding:6px; margin:0; border-radius:4px 4px 0 0;">📦 DIAGRAMA - CTO {cto.id:02d}</h3>
                         <div style="padding:10px; border:1px solid #ddd; background:#fff; font-size:12px;">
                             <p><b>Porta Ativa:</b> PON {cto.pon_id:02d}</p>
-                            <p><b>Caixa de Emenda:</b> CEO {ceo.id:02d}</p>
-                            <p><b>Modelo do Cabo Lançado:</b> Cabo Distribuição {tipo_cabo}</p>
-                            <p style="color:#2563eb; font-weight:bold;">✂️ Fusão / Sangria: Fibra 0{fibra_num} ({cor_fibra})</p>
-                            <p style="color:#666;">Fibras subsequentes seguem passantes e limpas no tubo loose.</p>
+                            <p><b>Cabo Derivado de:</b> {cto.pai_tipo} {cto.pai_id:02d}</p>
+                            <p><b>Modelo do Cabo do Trecho:</b> {tipo_cabo}</p>
+                            <p style="color:#2563eb; font-weight:bold;">✂️ Sangria de Atendimento: Fibra 0{fibra_num} ({cor_fibra})</p>
+                            <p style="color:#4b5563;">Carga total pendurada neste cabo: {carga_subsequente + 1} CTOs</p>
                             <hr style="border:0; border-top:1px solid #eee; margin:6px 0;">
-                            <p><b>Nível de Sinal Estimado:</b> <b>{potencia:.2f} dBm</b></p>
+                            <p><b>Sinal Estimado:</b> <span style="color:#16a34a; font-weight:bold;">{potencia:.2f} dBm</span></p>
                         </div>
                     </div>
                     """
                     pnt_cto = fol_ctos_root.newpoint(name=f"PON {cto.pon_id:02d} - CTO {cto.id:02d}", coords=[(cto.lng, cto.lat)])
                     pnt_cto.description = html_cto
 
-                    # Desenha a seção do cabo unindo os postes em linha reta (sem voltar e sem cruzar)
-                    lin_c = fol_cabos_root.newlinestring(name=f"Cabo PON {cto.pon_id:02d} - Rota {d_idx+1}")
-                    lin_c.coords = [(pt_anterior_lng, pt_anterior_lat), (cto.lng, cto.lat)]
+                    # Desenha a linha de poste reta perfeita da CTO Pai até a CTO Atual (SEM ZIGUE-ZAGUE)
+                    lin_c = fol_cabos_root.newlinestring(name=f"Cabo Lance -> CTO {cto.id:02d}")
+                    lin_c.coords = [(pai_lng, pai_lat), (cto.lng, cto.lat)]
                     lin_c.style.linestyle.width = 3
                     lin_c.style.linestyle.color = "ff00ff00" # Verde Distribuição
 
                     response_ctos.append({
-                        "id": cto.id, "lat": cto.lat, "lng": cto.lng, "pon_id": cto.pon_id, "ceo_vinculo": ceo.id,
-                        "potencia_dbm": round(potencia, 2), "cabo_utilizado": tipo_cabo, "fibra_sangrada": f"Fibra {fibra_num} ({cor_fibra})"
+                        "id": cto.id, "lat": cto.lat, "lng": cto.lng, "pon_id": cto.pon_id, 
+                        "pai_tipo": cto.pai_tipo, "pai_id": cto.pai_id, "potencia_dbm": round(potencia, 2),
+                        "cabo_utilizado": tipo_cabo, "fibra_sangrada": f"Fibra {fibra_num} ({cor_fibra})"
                     })
 
-                    # Avança o cabo para a próxima caixa na mesma linha reta
-                    pt_anterior_lat = cto.lat
-                    pt_anterior_lng = cto.lng
+                    elementosParaProcessar.remove(cto)
+            
+            if not processou_algum and len(elementos_para_processar) > 0:
+                # Break de segurança caso o projetista crie um vínculo órfão (vincular a uma CTO que não existe)
+                break
 
         return {
             "status": "sucesso",
@@ -168,7 +174,7 @@ async def calcular_rede_engenharia(dados: RequestProjetoEngenharia):
             "kml_conteudo": kml.kml()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro interno no motor de engenharia: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro interno no motor em cascata: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
