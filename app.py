@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sklearn.cluster import KMeans
 from typing import List
 
-app = FastAPI(title="Motor FTTH IA - Distribuição Multi-Ramal")
+app = FastAPI(title="Motor FTTH IA - Documentação Interna KML")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,6 +25,9 @@ TABELA_SPLITTERS = {
     "1x32": 17.0
 }
 
+# Código de Cores Padrão Anatel para Identificação de Fibras
+CORES_ANATEL = ["Verde", "Amarela", "Branca", "Azul", "Vermelha", "Violeta", "Marrom", "Rosa", "Preta", "Cinza", "Laranja", "Aqua"]
+
 class Coordenada(BaseModel):
     lat: float
     lng: float
@@ -39,7 +42,7 @@ class RequestProjeto(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"status": "Servidor FTTH Multi-Ramal Online"}
+    return {"status": "Servidor FTTH com Diagrama de Emenda no KML Ativo"}
 
 @app.post("/api/v1/calcular")
 async def calcular_rede(dados: RequestProjeto):
@@ -60,12 +63,9 @@ async def calcular_rede(dados: RequestProjeto):
             kmeans_cto.fit(clientes_matriz)
             ctos_geometria = kmeans_cto.cluster_centers_
 
-        # Forçamos 1 CEO centralizada para o cluster local para que ela concentre o Splitter de 1º Nível
-        # E distribua os cabos (lados) para as CTOs geograficamente separadas
         num_ctos_geradas = len(ctos_geometria)
-        ceos_geometria = np.array([np.mean(ctos_geometria, axis=0)]) 
+        ceo_coord = np.mean(ctos_geometria, axis=0)
         
-        # O algoritmo agrupa as caixas por direção/proximidade (Lados da Caixa de Emenda)
         capacidade_ceo = int(dados.splitter_ceo.split('x')[1]) 
         qtd_ramais_saida = min(capacidade_ceo, num_ctos_geradas)
         
@@ -76,26 +76,54 @@ async def calcular_rede(dados: RequestProjeto):
         else:
             labels_cto_para_ramal = np.zeros(num_ctos_geradas, dtype=int)
 
-        kml = simplekml.Kml(name="Projeto FTTH - Distribuição Estrela-Barramento")
-        fol_backbone = kml.newfolder(name="01. BACKBONE (Cabo Tronco OLT-CEO)")
-        fol_ceos = kml.newfolder(name="02. CAIXA DE EMENDA (CEO com Splitter 1º Nível)")
+        kml = simplekml.Kml(name="Projeto FTTH - Com Diagrama de Fusão")
+        fol_backbone = kml.newfolder(name="01. BACKBONE (Cabo Alimentador)")
+        fol_ceos = kml.newfolder(name="02. CAIXA DE EMENDA (CEO)")
         fol_ctos_root = kml.newfolder(name="03. CAIXAS DE ATENDIMENTO (CTO)")
-        fol_cabos_root = kml.newfolder(name="04. CABOS DE DISTRIBUIÇÃO (Saídas da CEO)")
+        fol_cabos_root = kml.newfolder(name="04. CABOS DE DISTRIBUIÇÃO")
 
         perda_ceo = TABELA_SPLITTERS.get(dados.splitter_ceo, 10.5)
         perda_cto = TABELA_SPLITTERS.get(dados.splitter_cto, 10.5)
-
-        # Implantando a CEO Central com o Splitter de 1º Nível
-        ceo_coord = ceos_geometria[0]
         dist_olt_ceo = np.sqrt((ceo_coord[0] - dados.olt.lat)**2 + (ceo_coord[1] - dados.olt.lng)**2) * 111.32
-        
+
+        # -----------------------------------------------------------------
+        # DOCUMENTAÇÃO DA CEO (DIAGRAMA DE EMENDA INTERNO)
+        # -----------------------------------------------------------------
+        html_ceo = f"""
+        <h3>DIAGRAMA DE EMENDA - CEO 01</h3>
+        <p><b>Splitter de 1º Nível instalado:</b> {dados.splitter_ceo}</p>
+        <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; font-family:sans-serif; font-size:12px;">
+            <tr style="background-color:#f2f2f2;">
+                <th>Origem (Cabo Tronco)</th>
+                <th>Elemento Interno</th>
+                <th>Destino (Saídas / Ramais)</th>
+            </tr>
+            <tr>
+                <td style="color:green; font-weight:bold;">Fibra 01 (Verde)</td>
+                <td>➡️ ENTRADA Splitter {dados.splitter_ceo}</td>
+                <td>Distribuição de Sinal Simétrico</td>
+            </tr>
+        """
+
+        # Mapeamento dinâmico das saídas do splitter para os ramais no HTML da CEO
+        for i_ramal in range(qtd_ramais_saida):
+            cor_fibra_saida = CORES_ANATEL[i_ramal % len(CORES_ANATEL)]
+            html_ceo += f"""
+            <tr>
+                <td>-</td>
+                <td>SAÍDA 0{i_ramal+1} do Splitter</td>
+                <td>➡️ Fundida na <b>Fibra 01 ({cor_fibra_saida})</b> do Cabo do <b>Ramal Lado {i_ramal+1}</b></td>
+            </tr>
+            """
+        html_ceo += "</table>"
+
         pnt_ceo = fol_ceos.newpoint(name=f"CEO 01 ({dados.splitter_ceo})", coords=[(float(ceo_coord[1]), float(ceo_coord[0]))])
-        pnt_ceo.description = f"Caixa de Emenda Concentradora\nSplitter de 1º Nível: {dados.splitter_ceo}\nFusões organizadas por ramal de saída."
+        pnt_ceo.description = html_ceo
         
         lin_tronco = fol_backbone.newlinestring(name="Cabo Alimentador Tronco")
         lin_tronco.coords = [(float(dados.olt.lng), float(dados.olt.lat)), (float(ceo_coord[1]), float(ceo_coord[0]))]
         lin_tronco.style.linestyle.width = 5
-        lin_tronco.style.linestyle.color = "ff0000ff" # Vermelho
+        lin_tronco.style.linestyle.color = "ff0000ff"
 
         response_ceos = [{
             "id": 1, "lat": float(ceo_coord[0]), "lng": float(ceo_coord[1]), "dist_olt_km": round(dist_olt_ceo, 2)
@@ -103,20 +131,20 @@ async def calcular_rede(dados: RequestProjeto):
 
         response_ctos = []
         
-        # Varre cada lado/ramal de saída independente da CEO
+        # Geração dos Ramais e das CTOs
         for i_ramal in range(qtd_ramais_saida):
             ramal_id = int(i_ramal + 1)
+            cor_do_ramal_na_ceo = CORES_ANATEL[i_ramal % len(CORES_ANATEL)]
             indices_ctos_deste_ramal = [idx for idx, label in enumerate(labels_cto_para_ramal) if int(label) == i_ramal]
             
             if not indices_ctos_deste_ramal:
                 continue
 
-            fol_ramal_cto = fol_ctos_root.newfolder(name=f"Ramal {ramal_id:02d} - Lado {ramal_id}")
-            fol_ramal_cabo = fol_cabos_root.newfolder(name=f"Cabo de Distribuição - Lado {ramal_id}")
+            fol_ramal_cto = fol_ctos_root.newfolder(name=f"Ramal Lado {ramal_id} - CTOs")
+            fol_ramal_cabo = fol_cabos_root.newfolder(name=f"Cabo Distribuição - Lado {ramal_id}")
             
             coords_ctos_ramal = ctos_geometria[indices_ctos_deste_ramal]
             
-            # Ordenação de percurso linear para esse LADO específico (vizinho mais próximo partindo da CEO)
             ponto_atual = ceo_coord
             restantes = list(zip(indices_ctos_deste_ramal, coords_ctos_ramal))
             sequencia_rota = []
@@ -138,20 +166,29 @@ async def calcular_rede(dados: RequestProjeto):
                 
                 dist_total_fibra = dist_olt_ceo + dist_acumulada_ramal
                 perda_fibra = dist_total_fibra * 0.35
-                
-                # Orçamento: Perda do Splitter da CEO + Perda do Splitter da CTO + Atenuação do Cabo + Conectores
                 perda_total = perda_fibra + perda_ceo + perda_cto + 0.6
                 potencia_final = dados.potencia_olt - perda_total
                 
-                # Adiciona o ponto da CTO no KML
+                # -----------------------------------------------------------------
+                # DOCUMENTAÇÃO DA CTO (IDENTIFICAÇÃO DA FIBRA ATIVA)
+                # -----------------------------------------------------------------
+                html_cto = f"""
+                <h3>DOCUMENTAÇÃO DE ATENDIMENTO - CTO {cto_id_num:02d}</h3>
+                <p><b>Ramal Vinculado:</b> Lado {ramal_id}</p>
+                <p><b>Origem do Sinal na CEO:</b> Saída 0{ramal_id} do Splitter 1º Nível</p>
+                <hr>
+                <p><b>Fibra Ativa para Atendimento nesta Caixa:</b> Fibra 01 ({cor_do_ramal_na_ceo}) vinda do ramal.</p>
+                <p><b>Splitter de Atendimento:</b> {dados.splitter_cto}</p>
+                <p><b>Potência Estimada de Sinal:</b> <span style="color:green; font-weight:bold;">{potencia_final:.2f} dBm</span></p>
+                """
+
                 pnt = fol_ramal_cto.newpoint(name=f"CTO {cto_id_num:02d}", coords=[(float(cto_coord[1]), float(cto_coord[0]))])
-                pnt.description = f"Ramal de Saída: {ramal_id}\nFibra designada (Fusão na CEO): Fibra {ramal_id}\nPotência calculada: {potencia_final:.2f} dBm"
+                pnt.description = html_cto
                 
-                # Desenha o cabo saindo da CEO ou ligando na CTO anterior do mesmo lado
-                lin = fol_ramal_cabo.newlinestring(name=f"Cabo Distribuição Lado {ramal_id} - Trecho {idx_seq+1}")
+                lin = fol_ramal_cabo.newlinestring(name=f"Cabo Ramal {ramal_id} - Trecho {idx_seq+1}")
                 lin.coords = [(float(ponto_anterior[1]), float(ponto_anterior[0])), (float(cto_coord[1]), float(cto_coord[0]))]
                 lin.style.linestyle.width = 3
-                lin.style.linestyle.color = "ff00ff00" # Verde
+                lin.style.linestyle.color = "ff00ff00"
                 
                 response_ctos.append({
                     "id": cto_id_num,
