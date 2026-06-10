@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict
 
-app = FastAPI(title="Motor FTTH - Engenharia de Sangria e Unifilar Digital Telecom")
+app = FastAPI(title="Motor FTTH - Unifilar e Sangria Digital Telecom")
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,7 +44,7 @@ class RequestProjetoCascata(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"status": "Motor de Emendas Estrito Digital Telecom Ativo"}
+    return {"status": "Motor FTTH Digital Telecom Online"}
 
 @app.post("/api/v1/calcular")
 async def calcular_rede_cascata(dados: RequestProjetoCascata):
@@ -54,8 +54,6 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
         raise HTTPException(status_code=400, detail="Implante caixas CTO no mapa antes de processar.")
 
     limite_caixas = TABELA_SPLITTERS.get(dados.splitter_ceo, 8)
-    
-    # Validação de teto físico da porta PON
     for ceo in dados.ceos:
         qtd_ctos = len([c for c in dados.ctos if c.pon_id == ceo.pon_id])
         if qtd_ctos > limite_caixas:
@@ -71,7 +69,7 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
         dict_ceos = {c.id: c for c in dados.ceos}
         dict_ctos = {c.id: c for c in dados.ctos}
         
-        # Cria estrutura de árvore para navegação hierárquica limpa
+        # Mapeamento topológico da árvore de derivações
         adjacencia_ctos: Dict[int, List[int]] = {c.id: [] for c in dados.ctos}
         filhos_diretos_ceo: Dict[int, List[int]] = {c.id: [] for c in dados.ceos}
         
@@ -89,26 +87,22 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
         contador_fibra_global = {ceo.id: 1 for ceo in dados.ceos}
         response_ctos = []
 
-        # Função recursiva estruturada para varrer a árvore fixando as fibras na sequência exata Anatel
+        # Algoritmo de caminhada profunda para garantir a distribuição sequencial perfeita de fibras
         def navegar_e_calcular(id_nodo: int, tipo_pai: str, pai_id_num: int, lat_pai: float, lng_pai: float, dist_base: float, ceo_origem_id: int):
             cto = dict_ctos[id_nodo]
             
-            # 1. Garante atribuição única e sequencial da fibra vinda da CEO
+            # Consome o ID único sequencial da fibra vinda direto da CEO
             f_num = contador_fibra_global[ceo_origem_id]
             contador_fibra_global[ceo_origem_id] += 1
             fibra_atribuida_cto[cto.id] = f_num
 
-            # 2. Orçamento de potência com base na distância de lançamento real
+            # Medição física da rota do cabo
             dist_lance = np.sqrt((cto.lat - lat_pai)**2 + (cto.lng - lng_pai)**2) * 111.32
             total_dist_rota = dist_base + dist_lance
             dist_acumulada_nodos[cto.id] = total_dist_rota
 
-            # 3. Descobre a carga subsequente para saber se usa cabo de 6FO ou 12FO
+            # Descobre a carga futura para travar se o cabo ASU do trecho deve ser 6FO ou 12FO
             def mapear_carga(nid):
                 filhos = adjacencia_ctos.get(nid, [])
                 sub_tot = len(filhos)
-                for fid in filhos:
-                    sub_tot += mapear_carga(fid)
-                return sub_tot
-            
-            total_caixas_no_cabo = mapear_carga(
+                for fid
