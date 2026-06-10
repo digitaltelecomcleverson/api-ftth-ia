@@ -15,8 +15,13 @@ CORES_ANATEL = ["Verde", "Amarela", "Branca", "Azul", "Vermelha", "Violeta", "Ma
 class Elemento(BaseModel):
     id: int; lat: float; lng: float; pon_id: int; pai_tipo: str; pai_id: int
 
+# No app.py, altere a classe Request da OLT para ser mais permissiva:
 class Projeto(BaseModel):
-    olt: dict; ceos: List[Elemento]; ctos: List[Elemento]; splitter_ceo: str; potencia_olt: float
+    olt: dict  # Mudamos de 'Coordenada' para 'dict' para evitar erros de validação
+    ceos: List[Elemento]
+    ctos: List[Elemento]
+    splitter_ceo: str
+    potencia_olt: float
 
 @app.post("/api/v1/calcular")
 async def calcular(dados: Projeto):
