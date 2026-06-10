@@ -12,12 +12,20 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 TABELA_SPLITTERS = {"1x2": 2, "1x4": 4, "1x8": 8, "1x16": 16}
 CORES_ANATEL = ["Verde", "Amarela", "Branca", "Azul", "Vermelha", "Violeta", "Marrom", "Rosa", "Preta", "Cinza", "Laranja", "Aqua"]
 
-class Elemento(BaseModel):
-    id: int; lat: float; lng: float; pon_id: int; pai_tipo: str; pai_id: int
+class OLT(BaseModel):
+    lat: float
+    lng: float
 
-# No app.py, altere a classe Request da OLT para ser mais permissiva:
+class Elemento(BaseModel):
+    id: int
+    lat: float
+    lng: float
+    pon_id: int
+    pai_tipo: str
+    pai_id: int
+
 class Projeto(BaseModel):
-    olt: dict  # Mudamos de 'Coordenada' para 'dict' para evitar erros de validação
+    olt: OLT  # Agora o Pydantic sabe exatamente o que esperar
     ceos: List[Elemento]
     ctos: List[Elemento]
     splitter_ceo: str
