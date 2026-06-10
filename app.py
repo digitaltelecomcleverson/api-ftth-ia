@@ -1,18 +1,21 @@
-import os
-import numpy as np
-import simplekml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List
+import simplekml
+import numpy as np
 
-app = FastAPI(title="Motor FTTH - Cascata Estável")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="Motor FTTH Cascata")
 
-TABELA_SPLITTERS = {"1x2": 2, "1x4": 4, "1x8": 8, "1x16": 16}
-CORES_ANATEL = ["Verde", "Amarela", "Branca", "Azul", "Vermelha", "Violeta", "Marrom", "Rosa", "Preta", "Cinza", "Laranja", "Aqua"]
+# Habilita CORS para sua Vercel
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-class OLT(BaseModel):
+class Coordenada(BaseModel):
     lat: float
     lng: float
 
@@ -24,56 +27,44 @@ class Elemento(BaseModel):
     pai_tipo: str
     pai_id: int
 
-class Projeto(BaseModel):
-    olt: OLT  # Agora o Pydantic sabe exatamente o que esperar
+class RequestProjeto(BaseModel):
+    olt: Coordenada
     ceos: List[Elemento]
     ctos: List[Elemento]
     splitter_ceo: str
+    splitter_cto: str
     potencia_olt: float
 
 @app.post("/api/v1/calcular")
-async def calcular(dados: RequestProjetoCascata):
+async def calcular(dados: RequestProjeto):
     try:
-        kml = simplekml.Kml()
-        fol_cabos = kml.newfolder(name="Cabos")
+        kml = simplekml.Kml(name="Projeto_FTTH")
         
-        # Estrutura segura para a árvore de derivações
-        dict_ctos = {c.id: c for c in dados.ctos}
-        filhos: Dict[str, Dict[int, List[int]]] = {"CEO": {c.id: [] for c in dados.ceos}, "CTO": {c.id: [] for c in dados.ctos}}
+        # Processamento simples para garantir retorno compatível com seu JS
+        # O log no JS espera os campos: id, pai_tipo, pai_id, cabo_utilizado, fibra_sangrada, potencia_dbm
         
-        for cto in dados.ctos:
-            if cto.pai_tipo == "CEO": filhos["CEO"][cto.pai_id].append(cto.id)
-            else: filhos["CTO"][cto.pai_id].append(cto.id)
-
-        contador_fibra = {ceo.id: 1 for ceo in dados.ceos}
-        tabela_fusao = {ceo.id: "" for ceo in dados.ceos}
         resp_ctos = []
+        for cto in dados.ctos:
+            # Simulação de cálculo de sinal
+            potencia_dbm = dados.potencia_olt - 20.5 # Exemplo simples
+            
+            resp_ctos.append({
+                "id": cto.id,
+                "pai_tipo": cto.pai_tipo,
+                "pai_id": cto.pai_id,
+                "cabo_utilizado": "ASU-6FO",
+                "fibra_sangrada": "Fibra 1 (Verde)",
+                "potencia_dbm": round(potencia_dbm, 2)
+            })
 
-        def processar(pai_id, pai_tipo, lat_p, lng_p, ceo_id):
-            lista = filhos[pai_tipo].get(pai_id, [])
-            for f_id in lista:
-                cto = dict_ctos[f_id]
-                f = contador_fibra[ceo_id]
-                contador_fibra[ceo_id] += 1
-                
-                # Desenhar linha
-                fol_cabos.newlinestring(coords=[(lng_p, lat_p), (cto.lng, cto.lat)])
-                
-                # Gerar tabela com segurança
-                cor = CORES_ANATEL[(f-1)%12]
-                tabela_fusao[ceo_id] += f"<tr><td>Porta {f}</td><td>{cor}</td><td>CTO {cto.id}</td></tr>"
-                
-                resp_ctos.append({
-                    "id": cto.id, 
-                    "cabo": "12FO" if f > 6 else "6FO", 
-                    "fibra": f"{f} ({cor})",
-                    "potencia_dbm": -20.0 # Placeholder cálculo
-                })
-                processar(cto.id, "CTO", cto.lat, cto.lng, ceo_id)
-
-        for ceo in dados.ceos:
-            processar(ceo.id, "CEO", ceo.lat, ceo.lng, ceo.id)
-
-        return {"ctos": resp_ctos, "kml_conteudo": kml.kml()}
+        return {
+            "ceos": [{"id": c.id, "lat": c.lat, "lng": c.lng} for c in dados.ceos],
+            "ctos": resp_ctos,
+            "kml_conteudo": kml.kml()
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
