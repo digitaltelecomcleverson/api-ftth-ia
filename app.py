@@ -33,10 +33,10 @@ class Coordenada(BaseModel):
 class RequestProjeto(BaseModel):
     olt: Coordenada
     clientes: List[Coordenada]
-    n_ctos: int
-    splitter_ceo: str  # '1x4', '1x8', '1x16'
-    splitter_cto: str  # '1x4', '1x8', '1x16'
-    potencia_olt: float
+    n_ctos: int          # Garanta que está como int
+    splitter_ceo: str    # Garanta que está como str
+    splitter_cto: str    # Garanta que está como str
+    potencia_olt: float  # Garanta que está como float
 
 @app.get("/")
 def read_root():
