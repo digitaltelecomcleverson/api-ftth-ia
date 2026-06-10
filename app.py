@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sklearn.cluster import KMeans
 from typing import List
 
-app = FastAPI(title="Motor FTTH IA - Ajuste Dinâmico de Grupos")
+app = FastAPI(title="Motor FTTH IA - Proteção Absoluta contra ValueError")
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,44 +47,43 @@ async def calcular_rede(dados: RequestProjeto):
         raise HTTPException(status_code=400, detail="Adicione clientes no mapa para calcular.")
 
     try:
-        # Extrai as coordenadas dos clientes em formato float puro
+        # 1. Extração e conversão dos dados de entrada
         clientes_matriz = np.array([[float(c.lat), float(c.lng)] for c in dados.clientes], dtype=float)
         num_clientes = len(clientes_matriz)
         
-        # BLINDAGEM 1: O número de caixas CTO não pode ser maior que o número de clientes na rua
+        # 2. Definição dinâmica do número de CTOs
         n_clusters_cto = min(int(dados.n_ctos), num_clientes)
         if n_clusters_cto < 1:
             n_clusters_cto = 1
-        
-        # 1. IA - Nível 2: Posicionamento das CTOs
-        kmeans_cto = KMeans(n_clusters=n_clusters_cto, random_state=42, n_init=10)
-        kmeans_cto.fit(clientes_matriz)
-        
-        if hasattr(kmeans_cto, "cluster_centers_"):
-            ctos_geometria = kmeans_cto.cluster_centers_
+
+        # CONTROLE DE EXCEÇÃO ABSOLUTO: Se houver apenas 1 cliente ou 1 CTO desejada, evita o KMeans
+        if num_clientes <= n_clusters_cto or num_clientes == 1:
+            ctos_geometria = clientes_matriz
         else:
-            ctos_geometria = kmeans_cto.cluster_centers
-            
-        # 2. IA - Nível 1: Posicionamento das CEOs (Caixas de Emenda)
+            kmeans_cto = KMeans(n_clusters=n_clusters_cto, random_state=42, n_init=10)
+            kmeans_cto.fit(clientes_matriz)
+            ctos_geometria = kmeans_cto.cluster_centers_ if hasattr(kmeans_cto, "cluster_centers_") else kmeans_cto.cluster_centers
+
+        # 3. Definição dinâmica do número de CEOs
         capacidade_ceo = int(dados.splitter_ceo.split('x')[1]) 
-        n_ceos_teorico = max(1, int(np.ceil(len(ctos_geometria) / capacidade_ceo)))
+        num_ctos_geradas = len(ctos_geometria)
         
-        # BLINDAGEM 2 (Correção do Erro): O número de CEOs não pode ser maior que o número de CTOs geradas!
-        n_clusters_ceo = min(n_ceos_teorico, len(ctos_geometria))
+        n_ceos_teorico = max(1, int(np.ceil(num_ctos_geradas / capacidade_ceo)))
+        n_clusters_ceo = min(n_ceos_teorico, num_ctos_geradas)
         if n_clusters_ceo < 1:
             n_clusters_ceo = 1
-        
-        kmeans_ceo = KMeans(n_clusters=n_clusters_ceo, random_state=42, n_init=10)
-        kmeans_ceo.fit(ctos_geometria)
-        
-        if hasattr(kmeans_ceo, "cluster_centers_"):
-            ceos_geometria = kmeans_ceo.cluster_centers_
+
+        # CONTROLE DE EXCEÇÃO ABSOLUTO PARA CEO: Evita o KMeans se o volume de dados for insuficiente
+        if num_ctos_geradas <= n_clusters_ceo or num_ctos_geradas == 1:
+            ceos_geometria = ctos_geometria
+            labels_cto_para_ceo = np.zeros(num_ctos_geradas, dtype=int) # Vincula tudo à única CEO (index 0)
         else:
-            ceos_geometria = kmeans_ceo.cluster_centers
-            
-        labels_cto_para_ceo = kmeans_ceo.labels_
+            kmeans_ceo = KMeans(n_clusters=n_clusters_ceo, random_state=42, n_init=10)
+            kmeans_ceo.fit(ctos_geometria)
+            ceos_geometria = kmeans_ceo.cluster_centers_ if hasattr(kmeans_ceo, "cluster_centers_") else kmeans_ceo.cluster_centers
+            labels_cto_para_ceo = kmeans_ceo.labels_
         
-        # 3. Geração do Arquivo KML
+        # 4. Geração da Árvore do Arquivo KML
         kml = simplekml.Kml(name="Projeto FTTH IA - Ramal Sequencial")
         
         fol_backbone = kml.newfolder(name="01. BACKBONE (Cabo Tronco)")
@@ -95,6 +94,7 @@ async def calcular_rede(dados: RequestProjeto):
         perda_ceo = TABELA_SPLITTERS.get(dados.splitter_ceo, 10.5)
         perda_cto = TABELA_SPLITTERS.get(dados.splitter_cto, 10.5)
 
+        # Geração das CEOs e cabos de alimentação
         response_ceos = []
         for i, coord in enumerate(ceos_geometria):
             ceo_id = int(i + 1)
@@ -112,6 +112,7 @@ async def calcular_rede(dados: RequestProjeto):
                 "id": ceo_id, "lat": float(coord[0]), "lng": float(coord[1]), "dist_olt_km": round(dist_olt_ceo, 2)
             })
 
+        # Geração das CTOs e interconexão em barramento
         response_ctos = []
         for i_ceo in range(len(ceos_geometria)):
             ceo_id_atual = int(i_ceo + 1)
@@ -126,7 +127,7 @@ async def calcular_rede(dados: RequestProjeto):
             coords_ctos_ramal = ctos_geometria[indices_ctos_deste_ramal]
             ceo_coord = ceos_geometria[i_ceo]
             
-            # Ordenação sequencial (Vizinho mais próximo)
+            # Ordenação de percurso sequencial (Vizinho mais próximo)
             ponto_atual = ceo_coord
             restantes = list(zip(indices_ctos_deste_ramal, coords_ctos_ramal))
             sequencia_rota = []
