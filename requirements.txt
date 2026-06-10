@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-scikit-learn
-numpy
 simplekml
-pydantic
+numpy
+requests
+scikit-learn
