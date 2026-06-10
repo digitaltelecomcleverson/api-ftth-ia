@@ -7,7 +7,7 @@ import numpy as np
 
 app = FastAPI(title="Motor FTTH Cascata")
 
-# Habilita CORS para sua Vercel
+# Habilita CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,11 +15,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 1. DEFINIÇÃO DAS CLASSES (Ordem correta: Primeiro as que são usadas dentro das outras)
+
 class Coordenada(BaseModel):
     lat: float
     lng: float
 
-class Elemento(BaseModel):
+class ElementoCascata(BaseModel):
     id: int
     lat: float
     lng: float
@@ -27,34 +29,33 @@ class Elemento(BaseModel):
     pai_tipo: str
     pai_id: int
 
-class RequestProjeto(BaseModel):
+class RequestProjetoCascata(BaseModel):
     olt: Coordenada
-    ceos: List[Elemento]
-    ctos: List[Elemento]
+    ceos: List[ElementoCascata]
+    ctos: List[ElementoCascata]
     splitter_ceo: str
     splitter_cto: str
     potencia_olt: float
 
+# 2. ROTA DE CALCULO
+
 @app.post("/api/v1/calcular")
-async def calcular(dados: RequestProjeto):
+async def calcular(dados: RequestProjetoCascata):
     try:
+        # Lógica de cálculo aqui
         kml = simplekml.Kml(name="Projeto_FTTH")
         
-        # Processamento simples para garantir retorno compatível com seu JS
-        # O log no JS espera os campos: id, pai_tipo, pai_id, cabo_utilizado, fibra_sangrada, potencia_dbm
-        
+        # Exemplo de resposta para o seu Frontend
+        # Certifique-se de que o log no seu index.html espera exatamente esta estrutura
         resp_ctos = []
         for cto in dados.ctos:
-            # Simulação de cálculo de sinal
-            potencia_dbm = dados.potencia_olt - 20.5 # Exemplo simples
-            
             resp_ctos.append({
                 "id": cto.id,
                 "pai_tipo": cto.pai_tipo,
                 "pai_id": cto.pai_id,
                 "cabo_utilizado": "ASU-6FO",
-                "fibra_sangrada": "Fibra 1 (Verde)",
-                "potencia_dbm": round(potencia_dbm, 2)
+                "fibra_sangrada": "Fibra 1",
+                "potencia_dbm": -20.0
             })
 
         return {
