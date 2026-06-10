@@ -7,7 +7,7 @@ import numpy as np
 
 app = FastAPI(title="Motor FTTH Cascata")
 
-# Habilita CORS para sua Vercel
+# Habilita CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,7 +15,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 1. DEFINIÇÃO DAS CLASSES NA ORDEM CORRETA
+# 1. CLASSES DE DADOS (Pydantic models)
+# Definimos primeiro as classes básicas para que o FastAPI entenda a estrutura
+
 class Coordenada(BaseModel):
     lat: float
     lng: float
@@ -37,16 +39,26 @@ class RequestProjetoCascata(BaseModel):
     potencia_olt: float
 
 # 2. ROTA DE CÁLCULO
+# Agora que as classes acima já foram lidas pelo Python, esta rota funcionará sem erro
 @app.post("/api/v1/calcular")
 async def calcular(dados: RequestProjetoCascata):
     try:
-        # A sua lógica de processamento original entra aqui
-        # Exemplo simplificado para teste:
+        # A sua lógica de processamento
+        resp_ctos = []
+        for cto in dados.ctos:
+            resp_ctos.append({
+                "id": cto.id,
+                "pai_tipo": cto.pai_tipo,
+                "pai_id": cto.pai_id,
+                "cabo_utilizado": "ASU-6FO",
+                "fibra_sangrada": "Fibra 1",
+                "potencia_dbm": -20.0
+            })
+
         return {
-            "status": "sucesso",
             "ceos": [{"id": c.id, "lat": c.lat, "lng": c.lng} for c in dados.ceos],
-            "ctos": [{"id": c.id, "potencia_dbm": -20.0} for c in dados.ctos],
-            "kml_conteudo": "" # Aqui viria o seu kml.kml()
+            "ctos": resp_ctos,
+            "kml_conteudo": "" 
         }
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
