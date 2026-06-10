@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict
 
-app = FastAPI(title="Motor FTTH - Cascata e Unifilar Estrito Anatel")
+app = FastAPI(title="Motor FTTH - Cascata e Unifilar")
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,7 +44,7 @@ class RequestProjetoCascata(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"status": "Motor de Emendas Estrito Digital Telecom Online"}
+    return {"status": "Motor de Emendas Cascata Ativo"}
 
 @app.post("/api/v1/calcular")
 async def calcular_rede_cascata(dados: RequestProjetoCascata):
@@ -60,7 +60,7 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
             raise HTTPException(status_code=400, detail=f"A PON {ceo.pon_id} possui {qtd_ctos} CTOs. O limite para o splitter {dados.splitter_ceo} é de {limite_caixas} caixas!")
 
     try:
-        kml = simplekml.Kml(name="Projeto Executivo - Digital Telecom")
+        kml = simplekml.Kml(name="Projeto Executivo - Rede Óptica")
         fol_backbone = kml.newfolder(name="01. BACKBONE (Cabo Alimentador)")
         fol_ceos = kml.newfolder(name="02. CAIXAS DE EMENDA (CEO)")
         fol_ctos_root = kml.newfolder(name="03. CAIXAS DE ATENDIMENTO (CTO)")
@@ -69,7 +69,6 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
         dict_ceos = {c.id: c for c in dados.ceos}
         dict_ctos = {c.id: c for c in dados.ctos}
         
-        # Mapeamento da árvore de derivações
         adjacencia_ctos: Dict[int, List[int]] = {c.id: [] for c in dados.ctos}
         filhos_diretos_ceo: Dict[int, List[int]] = {c.id: [] for c in dados.ceos}
         
@@ -85,23 +84,18 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
         fibra_atribuida_cto = {}
         tabela_emendas_master = {ceo.id: "" for ceo in dados.ceos}
         contador_fibra_global = {ceo.id: 1 for ceo in dados.ceos}
-        response_ctos = []
-
-        # Função recursiva DFS corrigida para caminhada de rede sem erros de escopo
+        
         def navegar_e_calcular(id_nodo: int, tipo_pai: str, pai_id_num: int, lat_pai: float, lng_pai: float, dist_base: float, ceo_origem_id: int):
             cto = dict_ctos[id_nodo]
             
-            # Consome a próxima fibra sequencial única daquela CEO
             f_num = contador_fibra_global[ceo_origem_id]
             contador_fibra_global[ceo_origem_id] += 1
             fibra_atribuida_cto[cto.id] = f_num
 
-            # Medição física da rota
             dist_lance = np.sqrt((cto.lat - lat_pai)**2 + (cto.lng - lng_pai)**2) * 111.32
             total_dist_rota = dist_base + dist_lance
             dist_acumulada_nodos[cto.id] = total_dist_rota
 
-            # Mapeia carga pendurada à jusante para definir a bitola do cabo ASU
             def mapear_carga(nid):
                 filhos = adjacencia_ctos.get(nid, [])
                 sub_tot = len(filhos)
@@ -115,10 +109,8 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
             cor_idx = (f_num - 1) % 12
             cor_fibra_anatel = CORES_ANATEL[cor_idx]
 
-            # Cálculo de atenuação óptica fixado e limpo
             potencia = dados.potencia_olt - ((total_dist_rota * 0.35) + 10.5 + 10.5 + 0.6)
 
-            # Documentação unifilar da CTO
             html_cto = f"""
             <div style="font-family:sans-serif; width:300px; color:#333;">
                 <h3 style="background-color:#059669; color:white; padding:6px; margin:0; border-radius:4px 4px 0 0;">📦 UNIFILAR - CTO {cto.id:02d}</h3>
@@ -137,13 +129,11 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
             pnt_cto = fol_ctos_root.newpoint(name=f"PON {cto.pon_id:02d} - CTO {cto.id:02d}", coords=[(cto.lng, cto.lat)])
             pnt_cto.description = html_cto
 
-            # Desenha a linha contínua do cabo de poste em poste seguindo a rua reta
             lin_c = fol_cabos_root.newlinestring(name=f"Cabo -> CTO {cto.id:02d}")
             lin_c.coords = [(lng_pai, lat_pai), (cto.lng, cto.lat)]
             lin_c.style.linestyle.width = 3
             lin_c.style.linestyle.color = "ff00ff00"
 
-            # Injeta a linha de correspondência exata na tabela de fusões da CEO pai
             tabela_emendas_master[ceo_origem_id] += f"""
             <tr>
                 <td style='padding:5px; border:1px solid #ddd;'><b>Saída 0{f_num} (Splitter)</b></td>
@@ -152,14 +142,12 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
             </tr>
             """
 
-            # Desce recursivamente para as sub-derivações que nascem a partir desta CTO
             proximos_filhos = adjacencia_ctos.get(cto.id, [])
             proximos_filhos.sort(key=lambda fid: (dict_ctos[fid].lat - cto.lat)**2 + (dict_ctos[fid].lng - cto.lng)**2)
             
             for ff_id in proximos_filhos:
                 navegar_e_calcular(ff_id, "CTO", cto.id, cto.lat, cto.lng, total_dist_rota, ceo_origem_id)
 
-        # Inicia o processamento da árvore por CEO
         for ceo in dados.ceos:
             dist_base_ceo = np.sqrt((ceo.lat - dados.olt.lat)**2 + (ceo.lng - dados.olt.lng)**2) * 111.32
             
@@ -169,7 +157,6 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
             for cto_id_inicial in filhos_diretos:
                 navegar_e_calcular(cto_id_inicial, "CEO", ceo.id, ceo.lat, ceo.lng, dist_base_ceo, ceo.id)
 
-            # GERAÇÃO DO BALÃO MESTRE COM A TABELA DE EMENDAS NA CEO COM HTML CORRIGIDO
             html_master_ceo = f"""
             <div style="font-family:sans-serif; width:420px; color:#333;">
                 <h3 style="background-color:#1e3a8a; color:white; padding:8px; margin:0; border-radius:4px 4px 0 0; font-size:14px;">📋 RELATÓRIO DE EMENDA - CEO {ceo.id:02d}</h3>
@@ -193,13 +180,11 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
             pnt_ceo = fol_ceos.newpoint(name=f"CEO {ceo.id:02d}", coords=[(ceo.lng, ceo.lat)])
             pnt_ceo.description = html_master_ceo
 
-            # Plota o cabo alimentador (Tronco Vermelho)
             lin_t = fol_backbone.newlinestring(name=f"Cabo Tronco -> CEO {ceo.id:02d}")
             lin_t.coords = [(dados.olt.lng, dados.olt.lat), (ceo.lng, ceo.lat)]
             lin_t.style.linestyle.width = 5
             lin_t.style.linestyle.color = "ff0000ff"
 
-        # Organiza a resposta JSON estruturada de volta para a interface Leaflet
         ctos_resposta = []
         for cto in dados.ctos:
             f_num_real = fibra_atribuida_cto.get(cto.id, 1)
@@ -208,7 +193,8 @@ async def calcular_rede_cascata(dados: RequestProjetoCascata):
             potencia_calc = dados.potencia_olt - ((dist_total_m * 0.35) + 10.5 + 10.5 + 0.6)
             
             ctos_resposta.append({
-                "id": cto.id, "lat": cto.lat, "lng": cto.lng, "pon_id": cto.pon_id, "ceo_vinculo": cto.ceo_vinculo,
+                "id": cto.id, "lat": cto.lat, "lng": cto.lng, "pon_id": cto.pon_id, 
+                "pai_tipo": cto.pai_tipo, "pai_id": cto.pai_id,
                 "potencia_dbm": round(potencia_calc, 2),
                 "cabo_utilizado": "12FO (ASU-120)" if f_num_real > 6 else "6FO (ASU-80)",
                 "fibra_sangrada": f"Fibra {f_num_real:02d} ({CORES_ANATEL[cor_idx]})"
