@@ -3,3 +3,4 @@ uvicorn
 simplekml
 numpy
 pydantic
+python-multipart
